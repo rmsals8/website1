@@ -108,6 +108,20 @@ export async function downloadExportResult(sessionId) {
 }
 
 /**
+ * 데스크톱 앱 다운로드 버튼 클릭 시 카운트 기록용. 실패해도 사용자 다운로드 자체는
+ * href 이동으로 이미 진행되므로, 호출부에서는 실패를 무시(fire-and-forget)해도 된다.
+ */
+export async function trackDownload(platform = 'desktop-windows') {
+  const res = await fetch(`${BASE_URL}/download/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform }),
+    keepalive: true,
+  })
+  return (await handleResponse(res)).json()
+}
+
+/**
  * 내보내기 시작 -> 완료될 때까지 진행률 폴링 -> 결과 blob 반환.
  * onProgress(completed, total)로 진행 상황을 콜백으로 알려준다.
  */

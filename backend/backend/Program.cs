@@ -53,7 +53,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// 로컬 개발(http-only)에서는 리다이렉트할 https 포트가 없어 경고만 찍고 넘어감.
+// 배포 환경(Cloudtype 등)에서는 앞단 프록시가 https를 이미 처리해서 내부로는 http로 전달하므로,
+// 여기서 또 https로 리다이렉트를 걸면 무한 리다이렉트 루프가 생길 수 있어 Development에서만 사용한다.
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseCors(FrontendCorsPolicy);
 

@@ -9,7 +9,15 @@ import {
   reorderPages,
   renderPageUrl,
   exportSessionWithProgress,
+  trackDownload,
 } from '../api/pdfApi.js'
+
+const DESKTOP_DOWNLOAD_URL = 'https://github.com/rmsals8/WpfApp1/releases/download/v1.0.0/AIOpdfSetup.exe'
+
+function trackDesktopDownload() {
+  // 다운로드 자체는 href로 즐시 진행되고, 카운트는 실패해도 다운로드를 막지 않도록 fire-and-forget로 처리
+  trackDownload('desktop-windows').catch(() => {})
+}
 
 const sessionId = ref(null)
 const pages = ref([])
@@ -343,19 +351,28 @@ async function splitRange() {
 
     <header class="toolbar">
       <div class="brand">
-        <span class="brand-mark">PP</span>
+        <span class="brand-mark">AP</span>
         <div class="brand-text">
-          <span class="brand-title">PagePress</span>
+          <span class="brand-title">ALO PDF</span>
           <span class="brand-sub">웹 PDF 편집기</span>
         </div>
       </div>
 
-      <div v-if="sessionId" class="toolbar-status">
-        <span class="page-count">{{ pageCountLabel }} 페이지</span>
-        <button class="ghost-btn" @click="startOver">새 파일</button>
-        <button class="primary-btn" :disabled="status.exporting || pages.length === 0" @click="doExport">
-          내보내기
-        </button>
+      <div class="toolbar-status">
+        <a
+          class="ghost-btn download-btn"
+          :href="DESKTOP_DOWNLOAD_URL"
+          @click="trackDesktopDownload"
+        >
+          ⬇ 데스크톱 앱 다운로드
+        </a>
+        <template v-if="sessionId">
+          <span class="page-count">{{ pageCountLabel }} 페이지</span>
+          <button class="ghost-btn" @click="startOver">새 파일</button>
+          <button class="primary-btn" :disabled="status.exporting || pages.length === 0" @click="doExport">
+            내보내기
+          </button>
+        </template>
       </div>
     </header>
 
@@ -598,6 +615,13 @@ async function splitRange() {
 .brand-sub {
   font-size: 12px;
   color: var(--ink-soft);
+}
+
+.download-btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .toolbar-status {

@@ -31,13 +31,20 @@ builder.Services.AddSingleton<TrialUsageService>();
 builder.Services.AddSingleton<ExportProgressService>();
 builder.Services.AddHostedService<SessionCleanupService>();
 
-// 프론트엔드(Vite, 기본 5173 포트) 개발 서버 허용.
+// 프론트엔드(Vite, 기본 5173 포트) 개발 서버 + 배포된 프론트엔드(FRONTEND_URL 환경변수) 허용.
 // 쿠키 기반 trial_id를 주고받아야 하므로 AllowCredentials 필요 -> AllowAnyOrigin과 함께 쓸 수 없어 명시적 Origin 지정.
+var allowedOrigins = new List<string> { "http://localhost:5173", "http://127.0.0.1:5173" };
+var frontendUrl = builder.Configuration["FRONTEND_URL"];
+if (!string.IsNullOrWhiteSpace(frontendUrl))
+{
+    allowedOrigins.Add(frontendUrl.TrimEnd('/'));
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(FrontendCorsPolicy, policy =>
     {
-        policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+        policy.WithOrigins(allowedOrigins.ToArray())
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();

@@ -1,0 +1,10 @@
+# 최상위 안전망 - backend/, frontend/ 안에도 각자 .gitignore가 있음
+.env
+*.env
+!.env.example
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+.DS_Store

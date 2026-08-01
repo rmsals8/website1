@@ -125,9 +125,26 @@ public class PdfController : ControllerBase
                 return NotFound(new ErrorResponse("페이지를 찾을 수 없습니다."));
 
             if (request.RotateBy is { } delta)
+            {
                 page.Rotation = ((page.Rotation + delta) % 360 + 360) % 360;
+                // 회전하면 좌표계가 바뀌므로, 기존 잉크(서명/그리기)는 초기화한다 (WpfApp1과 동일 정책)
+                page.InkStrokes.Clear();
+            }
             else if (request.Rotation is { } rot)
+            {
                 page.Rotation = ((rot % 360) + 360) % 360;
+                page.InkStrokes.Clear();
+            }
+
+            if (request.InkStrokes is { } inkStrokes)
+            {
+                page.InkStrokes = inkStrokes.Select(s => new InkStroke
+                {
+                    Color = s.Color,
+                    ThicknessRatio = s.ThicknessRatio,
+                    Points = s.Points.Select(p => new InkPoint { X = p.X, Y = p.Y }).ToList()
+                }).ToList();
+            }
 
             if (request.CropX is { } cx && request.CropY is { } cy && request.CropWidth is { } cw && request.CropHeight is { } ch)
                 page.Crop = new CropRegion { X = cx, Y = cy, Width = cw, Height = ch };
@@ -394,6 +411,10 @@ public class PdfController : ControllerBase
         p.Rotation,
         p.Crop.X, p.Crop.Y, p.Crop.Width, p.Crop.Height,
         p.Brightness, p.Contrast, p.Midtones, p.AutoExposure,
-        p.PageWidthPt, p.PageHeightPt
+        p.PageWidthPt, p.PageHeightPt,
+        p.InkStrokes.Select(s => new InkStrokeDto(
+            s.Points.Select(pt => new InkPointDto(pt.X, pt.Y)).ToList(),
+            s.Color,
+            s.ThicknessRatio)).ToList()
     );
 }

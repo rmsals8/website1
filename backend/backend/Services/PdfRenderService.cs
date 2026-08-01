@@ -99,10 +99,10 @@ public class PdfRenderService
         {
             PageSourceType.PdfPage or PageSourceType.InsertedPdfPage =>
                 RenderPdfPageBgra(sourceFilePath, page.SourcePageIndex, targetWidth, page.Rotation, crop,
-                    page.Brightness, page.Contrast, page.Midtones),
+                    page.Brightness, page.Contrast, page.Midtones, page.InkStrokes),
             PageSourceType.InsertedImage =>
                 RenderImagePageBgra(sourceFilePath, targetWidth, crop, page.Rotation,
-                    page.Brightness, page.Contrast, page.Midtones),
+                    page.Brightness, page.Contrast, page.Midtones, page.InkStrokes),
             _ => throw new InvalidOperationException("알 수 없는 페이지 소스 타입입니다.")
         };
 
@@ -184,8 +184,8 @@ public class PdfRenderService
             return;
 
         var (bgra, w, h) = page.SourceType == PageSourceType.InsertedImage
-            ? RenderImagePageBgra(path, ExportWidth, page.Crop, page.Rotation, page.Brightness, page.Contrast, page.Midtones)
-            : RenderPdfPageBgra(path, page.SourcePageIndex, ExportWidth, page.Rotation, page.Crop, page.Brightness, page.Contrast, page.Midtones);
+            ? RenderImagePageBgra(path, ExportWidth, page.Crop, page.Rotation, page.Brightness, page.Contrast, page.Midtones, page.InkStrokes)
+            : RenderPdfPageBgra(path, page.SourcePageIndex, ExportWidth, page.Rotation, page.Crop, page.Brightness, page.Contrast, page.Midtones, page.InkStrokes);
 
         var imageBytes = ImageAdjustmentService.EncodeJpeg(bgra, w, h, JpegQuality);
         var xImage = XImage.FromStream(() => new MemoryStream(imageBytes));
@@ -200,7 +200,7 @@ public class PdfRenderService
 
     private static (byte[] Bgra, int Width, int Height) RenderPdfPageBgra(
         string filePath, int pageIndex, int targetWidth, int rotation, CropRegion crop,
-        double brightness, double contrast, double midtones)
+        double brightness, double contrast, double midtones, IReadOnlyList<InkStroke>? inkStrokes = null)
     {
         using var docReader = DocLib.Instance.GetDocReader(File.ReadAllBytes(filePath), new PageDimensions(targetWidth, targetWidth * 2));
         using var pageReader = docReader.GetPageReader(pageIndex);
@@ -211,16 +211,19 @@ public class PdfRenderService
 
         var adjusted = ImageAdjustmentService.ApplyAdjustments(rawBytes, renderWidth, renderHeight, brightness, contrast, midtones);
         var (rotated, rotW, rotH) = ImageAdjustmentService.RotateBgra(adjusted, renderWidth, renderHeight, rotation);
-        return ImageAdjustmentService.CropBgra(rotated, rotW, rotH, crop);
+        // 잉크(서명/그리기)는 회전 이후·크롭 이전 좌표계에 저장되어 있으므로 이 시점에 합성한다.
+        var inked = ImageAdjustmentService.CompositeInkStrokes(rotated, rotW, rotH, inkStrokes ?? Array.Empty<InkStroke>());
+        return ImageAdjustmentService.CropBgra(inked, rotW, rotH, crop);
     }
 
     private static (byte[] Bgra, int Width, int Height) RenderImagePageBgra(
         string imagePath, int targetWidth, CropRegion crop, int rotation,
-        double brightness, double contrast, double midtones)
+        double brightness, double contrast, double midtones, IReadOnlyList<InkStroke>? inkStrokes = null)
     {
         var bgra = ImageAdjustmentService.LoadAndResizeImageToBgra(imagePath, targetWidth, out var width, out var height);
         var adjusted = ImageAdjustmentService.ApplyAdjustments(bgra, width, height, brightness, contrast, midtones);
         var (rotated, rotW, rotH) = ImageAdjustmentService.RotateBgra(adjusted, width, height, rotation);
-        return ImageAdjustmentService.CropBgra(rotated, rotW, rotH, crop);
+        var inked = ImageAdjustmentService.CompositeInkStrokes(rotated, rotW, rotH, inkStrokes ?? Array.Empty<InkStroke>());
+        return ImageAdjustmentService.CropBgra(inked, rotW, rotH, crop);
     }
 }

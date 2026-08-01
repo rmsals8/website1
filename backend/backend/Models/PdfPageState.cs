@@ -33,6 +33,9 @@ public class PdfPageState
 
     public bool AutoExposure { get; set; }
 
+    /// <summary>서명/그리기 획 목록. WpfApp1의 PdfPageItem.InkStrokes에 대응.</summary>
+    public List<InkStroke> InkStrokes { get; set; } = new();
+
     public double PageWidthPt => Rotation is 90 or 270 ? OriginalHeightPt : OriginalWidthPt;
 
     public double PageHeightPt => Rotation is 90 or 270 ? OriginalWidthPt : OriginalHeightPt;
@@ -44,5 +47,6 @@ public class PdfPageState
         !Crop.IsFull ||
         Brightness != 0 ||
         Contrast != 0 ||
-        Midtones != 0;
+        Midtones != 0 ||
+        InkStrokes.Count > 0;
 }

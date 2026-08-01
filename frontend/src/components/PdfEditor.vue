@@ -46,6 +46,13 @@ const cropBox = ref(null) // { x, y, w, h } in 0..1, while dragging
 const isDraggingCrop = ref(false)
 const previewFrame = ref(null)
 
+// ---- 서명/그리기(잉크) 편집 상태 ----
+const editMode = ref('crop') // 'crop' | 'draw' | 'erase'
+const inkColor = ref('#000000')
+const inkThicknessRatio = ref(0.006) // 페이지 너비 대비 비율 (WpfApp1의 InkThickness에 대응)
+const isDrawing = ref(false)
+const drawingPoints = ref([]) // 현재 그리는 중인 획의 점 목록(0~1 정규화), 커밋 전까지만 클라이언트에서 보유
+
 const selectedPage = computed(() => pages.value.find((p) => p.id === selectedPageId.value) || null)
 const pageCountLabel = computed(() => `${pages.value.length} / ${maxPages.value === Number.MAX_SAFE_INTEGER || maxPages.value > 9000 ? '무제한' : maxPages.value}`)
 const exportPercent = computed(() => {
@@ -114,6 +121,8 @@ async function onInsertChange(e) {
 function selectPage(id) {
   selectedPageId.value = id
   cropBox.value = null
+  editMode.value = 'crop'
+  drawingPoints.value = []
 }
 
 async function patchSelected(patch) {
@@ -186,6 +195,13 @@ async function onDrop(targetId) {
 }
 
 // ---- crop drag-select on the large preview ----
+function getNormalizedPoint(e) {
+  const rect = previewFrame.value.getBoundingClientRect()
+  const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+  const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height))
+  return { x, y }
+}
+
 function onCropMouseDown(e) {
   if (!previewFrame.value) return
   isDraggingCrop.value = true
@@ -218,6 +234,111 @@ function onCropMouseUp() {
   const cx = cropBox.value.x
   const cy = cropBox.value.y
   patchSelected({ cropX: cx, cropY: cy, cropWidth: cropBox.value.w, cropHeight: cropBox.value.h })
+}
+
+// ---- 서명/그리기 및 지우개: 모드에 따라 자르기/그리기/지우기로 분기 ----
+function toInkStrokeDto(stroke) {
+  return {
+    points: stroke.points.map((p) => ({ x: p.x, y: p.y })),
+    color: stroke.color,
+    thicknessRatio: stroke.thicknessRatio,
+  }
+}
+
+function onPreviewMouseDown(e) {
+  if (!previewFrame.value) return
+  if (editMode.value === 'crop') {
+    onCropMouseDown(e)
+    return
+  }
+  if (editMode.value === 'draw') {
+    isDrawing.value = true
+    drawingPoints.value = [getNormalizedPoint(e)]
+    return
+  }
+  if (editMode.value === 'erase') {
+    isDrawing.value = true
+    eraseAt(getNormalizedPoint(e))
+  }
+}
+
+function onPreviewMouseMove(e) {
+  if (editMode.value === 'crop') {
+    onCropMouseMove(e)
+    return
+  }
+  if (editMode.value === 'draw' && isDrawing.value) {
+    drawingPoints.value.push(getNormalizedPoint(e))
+    return
+  }
+  if (editMode.value === 'erase' && isDrawing.value) {
+    eraseAt(getNormalizedPoint(e))
+  }
+}
+
+async function onPreviewMouseUp() {
+  if (editMode.value === 'crop') {
+    onCropMouseUp()
+    return
+  }
+  if (editMode.value === 'draw') {
+    isDrawing.value = false
+    if (drawingPoints.value.length >= 2 && selectedPage.value) {
+      const newStroke = {
+        points: drawingPoints.value.map((p) => ({ x: p.x, y: p.y })),
+        color: inkColor.value,
+        thicknessRatio: inkThicknessRatio.value,
+      }
+      const existing = (selectedPage.value.inkStrokes || []).map(toInkStrokeDto)
+      drawingPoints.value = []
+      await patchSelected({ inkStrokes: [...existing, newStroke] })
+      return
+    }
+    drawingPoints.value = []
+    return
+  }
+  if (editMode.value === 'erase') {
+    isDrawing.value = false
+  }
+}
+
+function onPreviewMouseLeave() {
+  isDraggingCrop.value = false
+  isDrawing.value = false
+  drawingPoints.value = []
+}
+
+let eraseInFlight = false
+async function eraseAt(p) {
+  if (!selectedPage.value || eraseInFlight) return
+  const strokes = selectedPage.value.inkStrokes || []
+  const threshold = 0.025
+  const remaining = strokes.filter(
+    (s) => !s.points.some((pt) => Math.hypot(pt.x - p.x, pt.y - p.y) < threshold),
+  )
+  if (remaining.length === strokes.length) return
+  eraseInFlight = true
+  try {
+    await patchSelected({ inkStrokes: remaining.map(toInkStrokeDto) })
+  } finally {
+    eraseInFlight = false
+  }
+}
+
+function clearInk() {
+  patchSelected({ inkStrokes: [] })
+}
+
+function setMode(mode) {
+  editMode.value = mode
+  isDraggingCrop.value = false
+  isDrawing.value = false
+  drawingPoints.value = []
+  if (mode !== 'crop') cropBox.value = null
+}
+
+function setInkColor(color) {
+  inkColor.value = color
 }
 
 // ---- export ----
@@ -259,6 +380,8 @@ function startOver() {
   selectedPageId.value = null
   status.error = ''
   status.trialBlocked = false
+  editMode.value = 'crop'
+  drawingPoints.value = []
 }
 
 // ---- 범위 삭제 / 분리(스플릿) ----
@@ -422,22 +545,67 @@ async function splitRange() {
 
       <main class="detail-panel">
         <template v-if="selectedPage">
+          <div class="ink-toolbar">
+            <div class="mode-group">
+              <button class="mode-btn" :class="{ active: editMode === 'crop' }" @click="setMode('crop')">✂ 자르기
+              </button>
+              <button class="mode-btn" :class="{ active: editMode === 'draw' }" @click="setMode('draw')">✒ 서명/그리기
+              </button>
+              <button class="mode-btn" :class="{ active: editMode === 'erase' }" @click="setMode('erase')">🧹 지우개
+              </button>
+            </div>
+            <div v-if="editMode === 'draw'" class="ink-options">
+              <button
+                v-for="c in ['#000000', '#0078D4', '#C42B1C']"
+                :key="c"
+                class="color-swatch"
+                :class="{ active: inkColor === c }"
+                :style="{ background: c }"
+                :title="c"
+                @click="setInkColor(c)"
+              />
+              <span class="control-label">굵기</span>
+              <input type="range" min="0.002" max="0.02" step="0.001" v-model.number="inkThicknessRatio" />
+            </div>
+            <button v-if="editMode !== 'crop'" class="ghost-btn" @click="clearInk">서명 지우기</button>
+          </div>
+
           <div
             ref="previewFrame"
             class="preview-frame"
-            @mousedown="onCropMouseDown"
-            @mousemove="onCropMouseMove"
-            @mouseup="onCropMouseUp"
-            @mouseleave="isDraggingCrop = false"
+            :class="`mode-${editMode}`"
+            @mousedown="onPreviewMouseDown"
+            @mousemove="onPreviewMouseMove"
+            @mouseup="onPreviewMouseUp"
+            @mouseleave="onPreviewMouseLeave"
           >
             <img :src="previewUrl(selectedPage.id)" alt="선택한 페이지 미리보기" draggable="false" />
             <div
-              v-if="cropBox"
+              v-if="cropBox && editMode === 'crop'"
               class="crop-box"
               :style="{ left: cropBox.x * 100 + '%', top: cropBox.y * 100 + '%', width: cropBox.w * 100 + '%', height: cropBox.h * 100 + '%' }"
             />
+            <svg
+              v-if="editMode === 'draw' && drawingPoints.length > 1"
+              class="ink-live-overlay"
+              viewBox="0 0 1 1"
+              preserveAspectRatio="none"
+            >
+              <polyline
+                :points="drawingPoints.map((p) => `${p.x},${p.y}`).join(' ')"
+                fill="none"
+                :stroke="inkColor"
+                :stroke-width="inkThicknessRatio"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
           </div>
-          <p class="hint">미리보기 위를 드래그해 자를 영역을 선택하세요.</p>
+          <p class="hint">
+            <template v-if="editMode === 'crop'">미리보기 위를 드래그해 자를 영역을 선택하세요.</template>
+            <template v-else-if="editMode === 'draw'">미리보기 위에 드래그해서 서명이나 그림을 그리세요.</template>
+            <template v-else>지우고 싶은 획 근처를 클릭(드래그)하면 해당 획이 지워져요.</template>
+          </p>
 
           <div class="controls">
             <div class="control-group">
@@ -891,6 +1059,71 @@ async function splitRange() {
   user-select: none;
   cursor: crosshair;
   box-shadow: 0 2px 10px rgba(27, 27, 31, 0.1);
+}
+
+.preview-frame.mode-draw {
+  cursor: crosshair;
+}
+
+.preview-frame.mode-erase {
+  cursor: not-allowed;
+}
+
+.ink-toolbar {
+  max-width: 560px;
+  margin: 0 auto 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.mode-group {
+  display: flex;
+  gap: 6px;
+}
+
+.mode-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.ink-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  cursor: pointer;
+  padding: 0;
+}
+
+.color-swatch.active {
+  border-color: var(--accent);
+}
+
+.ink-live-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .preview-frame img {

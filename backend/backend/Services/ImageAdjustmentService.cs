@@ -85,6 +85,100 @@ public static class ImageAdjustmentService
         return (result, w, h);
     }
 
+    /// <summary>
+    /// 잉크 획(서명/그리기)을 BGRA 버퍼에 직접 합성한다(회전/크롭과 동일하게 ImageSharp.Drawing 대신
+    /// 순수 픽셀 연산을 쓴다 — PdfSharpCore가 ImageSharp의 구버전 API에 의존해 ImageSharp.Drawing이 요구하는
+    /// 신귝버전으로 올리면 런타임 MissingMethodException이 난다). 좌표는 "회전 적용, 크롭 미적용" 상태의
+    /// 0~1 정규화 좌표(CropRegion과 동일 좌표계)이므로, 회전 이후 크롭 이전 시점에 호출해야
+    /// WpfApp1 데스크톱 버전과 동일한 위치에 그려진다.
+    /// </summary>
+    public static byte[] CompositeInkStrokes(byte[] bgraBytes, int width, int height, IReadOnlyList<InkStroke> strokes)
+    {
+        if (strokes.Count == 0)
+            return bgraBytes;
+
+        var result = (byte[])bgraBytes.Clone();
+
+        foreach (var stroke in strokes)
+        {
+            if (stroke.Points.Count == 0)
+                continue;
+
+            var (r, g, b, a) = ParseInkColorBytes(stroke.Color);
+            var radius = Math.Max(0.5, stroke.ThicknessRatio * width / 2.0);
+
+            if (stroke.Points.Count == 1)
+            {
+                var p = stroke.Points[0];
+                StampCircle(result, width, height, p.X * width, p.Y * height, radius, r, g, b, a);
+                continue;
+            }
+
+            for (var i = 0; i < stroke.Points.Count - 1; i++)
+            {
+                var x0 = stroke.Points[i].X * width;
+                var y0 = stroke.Points[i].Y * height;
+                var x1 = stroke.Points[i + 1].X * width;
+                var y1 = stroke.Points[i + 1].Y * height;
+
+                var dist = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+                var steps = Math.Max(1, (int)Math.Ceiling(dist)); // 1px 간격으로 원을 뚝어 선을 이은다(이동 응)
+                for (var s = 0; s <= steps; s++)
+                {
+                    var t = (double)s / steps;
+                    var x = x0 + (x1 - x0) * t;
+                    var y = y0 + (y1 - y0) * t;
+                    StampCircle(result, width, height, x, y, radius, r, g, b, a);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>지정한 중심점에 반지름(radius)크기의 원을 알파 블렌딩해서 직접 찍는다(펀 굵기의 획 끝/이음새 표현용)</summary>
+    private static void StampCircle(byte[] buffer, int width, int height, double cx, double cy, double radius, byte r, byte g, byte b, byte a)
+    {
+        var minX = Math.Max(0, (int)Math.Floor(cx - radius));
+        var maxX = Math.Min(width - 1, (int)Math.Ceiling(cx + radius));
+        var minY = Math.Max(0, (int)Math.Floor(cy - radius));
+        var maxY = Math.Min(height - 1, (int)Math.Ceiling(cy + radius));
+        var r2 = radius * radius;
+        var alpha = a / 255.0;
+
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var dx = x + 0.5 - cx;
+                var dy = y + 0.5 - cy;
+                if (dx * dx + dy * dy > r2)
+                    continue;
+
+                var idx = (y * width + x) * 4;
+                // BGRA 순서: B, G, R, A
+                buffer[idx] = (byte)Math.Round(b * alpha + buffer[idx] * (1 - alpha));
+                buffer[idx + 1] = (byte)Math.Round(g * alpha + buffer[idx + 1] * (1 - alpha));
+                buffer[idx + 2] = (byte)Math.Round(r * alpha + buffer[idx + 2] * (1 - alpha));
+                buffer[idx + 3] = Math.Max(buffer[idx + 3], a);
+            }
+        }
+    }
+
+    /// <summary>#RRGGBB 또는 #AARRGGBB 형식의 색상 문자열을 (R,G,B,A) 바이트로 변환</summary>
+    private static (byte R, byte G, byte B, byte A) ParseInkColorBytes(string hex)
+    {
+        var h = hex.TrimStart('#');
+        if (h.Length == 6)
+            h = "FF" + h; // 알파 생략 시 불투명으로 간주
+
+        var a = Convert.ToByte(h[..2], 16);
+        var r = Convert.ToByte(h.Substring(2, 2), 16);
+        var g = Convert.ToByte(h.Substring(4, 2), 16);
+        var b = Convert.ToByte(h.Substring(6, 2), 16);
+        return (r, g, b, a);
+    }
+
     /// <summary>파일 경로에서 이미지를 로드해 targetWidth로 비율 유지 리사이즈 후 BGRA 픽셀 배열로 변환</summary>
     public static byte[] LoadAndResizeImageToBgra(string path, int targetWidth, out int width, out int height)
     {

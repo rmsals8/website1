@@ -101,39 +101,74 @@ public static class ImageAdjustmentService
 
         foreach (var stroke in strokes)
         {
-            if (stroke.Points.Count == 0)
-                continue;
-
-            var (r, g, b, a) = ParseInkColorBytes(stroke.Color);
-            var radius = Math.Max(0.5, stroke.ThicknessRatio * width / 2.0);
-
-            if (stroke.Points.Count == 1)
+            // [방어코드] 획 하나가 비정상적인 데이터(동시 터치 오인식 등으로 수천~수만 개의
+            // 점이 기록되거나, 값이 NaN/음수 등)로 인해 예외를 던지면, 예전에는 RenderPage
+            // 전체가 500으로 실패하고 그 뒤로 이 페이지는 영구히(모든 이후 렌더 요청에서 같은
+            // 획을 다시 합성하려 하므로) 미리보기/썸네일이 둘 다 깨지는 치명적인 문제가 있었다.
+            // 문제 있는 획 하나만 건너뛰고(안 그리고) 나머지 획은 정상 합성되도록 격리한다.
+            try
             {
-                var p = stroke.Points[0];
-                StampCircle(result, width, height, p.X * width, p.Y * height, radius, r, g, b, a);
-                continue;
+                CompositeSingleStroke(result, width, height, stroke);
             }
-
-            for (var i = 0; i < stroke.Points.Count - 1; i++)
+            catch
             {
-                var x0 = stroke.Points[i].X * width;
-                var y0 = stroke.Points[i].Y * height;
-                var x1 = stroke.Points[i + 1].X * width;
-                var y1 = stroke.Points[i + 1].Y * height;
-
-                var dist = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-                var steps = Math.Max(1, (int)Math.Ceiling(dist)); // 1px 간격으로 원을 뚝어 선을 이은다(이동 응)
-                for (var s = 0; s <= steps; s++)
-                {
-                    var t = (double)s / steps;
-                    var x = x0 + (x1 - x0) * t;
-                    var y = y0 + (y1 - y0) * t;
-                    StampCircle(result, width, height, x, y, radius, r, g, b, a);
-                }
+                // 이 획만 건너뜀. 다른 획과 페이지 자체 렌더링은 계속 진행된다.
             }
         }
 
         return result;
+    }
+
+    private static void CompositeSingleStroke(byte[] result, int width, int height, InkStroke stroke)
+    {
+        if (stroke.Points.Count == 0)
+            return;
+
+        var (r, g, b, a) = ParseInkColorBytes(stroke.Color);
+
+        // 굵기 값이 비정상적으로 크거나(NaN 포함) 음수이면 흔적을 남기지 않도록 안전한 범위로 감싸서,
+        // 만약 큰 도형을 수천 번 찍는 상황이 되더라도 렌더링이 비정상적으로 오래 걸리는 일을 막는다.
+        var maxDimension = Math.Max(width, height);
+        var rawRadius = stroke.ThicknessRatio * width / 2.0;
+        if (double.IsNaN(rawRadius) || double.IsInfinity(rawRadius))
+            rawRadius = 1.0;
+        var radius = Math.Clamp(rawRadius, 0.5, Math.Max(1.0, maxDimension));
+
+        // 한 획에 점이 비정상적으로 많으면(예: 수만 개) 렌더링이 오래 걸릴 수 있으므로 상한을 둔다.
+        const int maxPoints = 4000;
+        var points = stroke.Points.Count > maxPoints
+            ? stroke.Points.Take(maxPoints).ToList()
+            : stroke.Points;
+
+        if (points.Count == 1)
+        {
+            var p = points[0];
+            StampCircle(result, width, height, p.X * width, p.Y * height, radius, r, g, b, a);
+            return;
+        }
+
+        for (var i = 0; i < points.Count - 1; i++)
+        {
+            var x0 = points[i].X * width;
+            var y0 = points[i].Y * height;
+            var x1 = points[i + 1].X * width;
+            var y1 = points[i + 1].Y * height;
+
+            var dist = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+            if (double.IsNaN(dist) || double.IsInfinity(dist))
+                continue;
+
+            // 1px 간격으로 원을 찍어 선을 이은다(이동 평균). steps가 비정상적으로 커지는 상황(매우
+            // 먼 두 점)을 대비해 상한을 둔다.
+            var steps = Math.Clamp((int)Math.Ceiling(dist), 1, 4000);
+            for (var s = 0; s <= steps; s++)
+            {
+                var t = (double)s / steps;
+                var x = x0 + (x1 - x0) * t;
+                var y = y0 + (y1 - y0) * t;
+                StampCircle(result, width, height, x, y, radius, r, g, b, a);
+            }
+        }
     }
 
     /// <summary>지정한 중심점에 반지름(radius)크기의 원을 알파 블렌딩해서 직접 찍는다(펀 굵기의 획 끝/이음새 표현용)</summary>
